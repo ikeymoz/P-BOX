@@ -5,7 +5,9 @@ import { cn } from '@/lib/utils'
 import { useSidebar } from './Layout'
 import { useThemeStore } from '@/stores/themeStore'
 import { useProxyStore } from '@/stores/proxyStore'
+import { useCoreStore } from '@/stores/coreStore'
 import { systemApi } from '@/api/system'
+import { coreApi } from '@/api/core'
 import {
   LayoutDashboard,
   Globe,
@@ -24,20 +26,26 @@ import {
   Send,
 } from 'lucide-react'
 
-// Navigation groups
-const mainNavItems = [
+// 根据核心类型动态获取主导航项
+const getMainNavItems = (activeCore: 'mihomo' | 'singbox') => [
   { path: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', color: 'blue' },
   { path: '/proxy-switch', icon: ArrowLeftRight, labelKey: 'nav.proxySwitch', color: 'purple' },
   { path: '/nodes', icon: Globe, labelKey: 'nav.nodes', color: 'cyan' },
   { path: '/connections', icon: Link2, labelKey: 'nav.connections', color: 'teal' },
   { path: '/subscriptions', icon: ListTree, labelKey: 'nav.subscriptions', color: 'green' },
   { path: '/config-generator', icon: FileCode, labelKey: 'nav.configGenerator', color: 'orange' },
-  { path: '/ruleset', icon: Database, labelKey: 'nav.ruleset', color: 'pink' },
+  // 根据核心类型显示不同的规则集页面
+  activeCore === 'singbox'
+    ? { path: '/singbox-ruleset', icon: Database, labelKey: 'nav.singboxRuleset', color: 'pink' }
+    : { path: '/ruleset', icon: Database, labelKey: 'nav.ruleset', color: 'pink' },
 ]
 
-const systemNavItems = [
+// 根据核心类型动态获取系统导航项
+const getSystemNavItems = (activeCore: 'mihomo' | 'singbox') => [
   { path: '/core-manage', icon: Cpu, labelKey: 'nav.coreManage', color: 'red' },
-  { path: '/proxy-settings', icon: SlidersHorizontal, labelKey: 'nav.proxySettings', color: 'indigo' },
+  activeCore === 'singbox'
+    ? { path: '/singbox-settings', icon: SlidersHorizontal, labelKey: 'nav.singboxSettings', color: 'purple' }
+    : { path: '/proxy-settings', icon: SlidersHorizontal, labelKey: 'nav.proxySettings', color: 'indigo' },
   { path: '/wireguard', icon: Network, labelKey: 'nav.wireguard', color: 'cyan' },
   { path: '/logs', icon: FileText, labelKey: 'nav.logs', color: 'yellow' },
   { path: '/settings', icon: Settings, labelKey: 'nav.settings', color: 'rose' },
@@ -52,6 +60,7 @@ export default function Sidebar() {
   const { isOpen, close } = useSidebar()
   const { themeStyle } = useThemeStore()
   const { isRunning, fetchStatus } = useProxyStore()
+  const { activeCore, setActiveCore } = useCoreStore()
   const [appVersion, setAppVersion] = useState('0.0.0')
 
   // 获取代理状态
@@ -60,6 +69,15 @@ export default function Sidebar() {
     const interval = setInterval(fetchStatus, 5000)
     return () => clearInterval(interval)
   }, [fetchStatus])
+
+  // 初始化：从后端同步当前核心状态
+  useEffect(() => {
+    coreApi.getStatus().then(status => {
+      if (status?.currentCore && status.currentCore !== activeCore) {
+        setActiveCore(status.currentCore)
+      }
+    }).catch(() => {})
+  }, []) // 只在首次加载时执行
 
   // 获取应用版本号
   useEffect(() => {
@@ -70,6 +88,9 @@ export default function Sidebar() {
     }).catch(() => {})
   }, [])
 
+  // 根据核心类型获取主导航项
+  const mainNavItems = getMainNavItems(activeCore)
+  
   // 根据代理状态过滤导航项
   const filteredMainNavItems = mainNavItems.filter(item => {
     // 代理切换只有在运行时显示
@@ -159,7 +180,7 @@ export default function Sidebar() {
           
           <div>
             <div className="px-2 pb-2 text-[10px] font-mono text-slate-500 uppercase tracking-wider">System</div>
-            {renderNavItems(systemNavItems)}
+            {renderNavItems(getSystemNavItems(activeCore))}
           </div>
         </div>
       </div>

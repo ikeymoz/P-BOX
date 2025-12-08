@@ -94,9 +94,15 @@ func (h *Handler) UpdateAll(c *gin.Context) {
 		return
 	}
 
+	// 解析请求参数
+	var req struct {
+		GitHubProxy string `json:"githubProxy"`
+	}
+	c.ShouldBindJSON(&req)
+
 	// 异步更新
 	go func() {
-		h.service.DownloadAllFiles()
+		h.service.DownloadAllFilesWithProxy(req.GitHubProxy)
 	}()
 
 	c.JSON(http.StatusOK, gin.H{

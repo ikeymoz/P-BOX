@@ -15,6 +15,45 @@ export interface Node {
   shareUrl?: string
 }
 
+// 协议字段定义
+export interface ProtocolField {
+  name: string
+  label: string
+  type: 'text' | 'number' | 'password' | 'select' | 'boolean' | 'textarea'
+  required: boolean
+  default?: unknown
+  placeholder?: string
+  description?: string
+  options?: Array<{ label: string; value: unknown }>
+  min?: number
+  max?: number
+  depends_on?: string
+  depends_value?: unknown
+}
+
+// 手动添加节点请求
+export interface ManualNodeRequest {
+  name: string
+  type: string
+  server: string
+  server_port: number
+  config: Record<string, unknown>
+}
+
+// 支持的协议列表
+export const PROTOCOL_LIST = [
+  { value: 'vmess', label: 'VMess' },
+  { value: 'vless', label: 'VLESS' },
+  { value: 'trojan', label: 'Trojan' },
+  { value: 'shadowsocks', label: 'Shadowsocks' },
+  { value: 'socks', label: 'SOCKS5' },
+  { value: 'hysteria', label: 'Hysteria' },
+  { value: 'hysteria2', label: 'Hysteria2' },
+  { value: 'tuic', label: 'TUIC' },
+  { value: 'wireguard', label: 'WireGuard' },
+  { value: 'ssh', label: 'SSH' },
+]
+
 export const nodeApi = {
   // Get all nodes
   list: () => api.get<Node[]>('/nodes'),
@@ -23,9 +62,13 @@ export const nodeApi = {
   importUrl: (url: string) => 
     api.post<Node>('/nodes/import', { url }),
 
-  // Add manual node
+  // Add manual node (simple)
   addManual: (data: { name: string; type: string; server: string; port: number; config?: string }) =>
     api.post<Node>('/nodes/manual', data),
+
+  // Add manual node (advanced with full config)
+  addManualAdvanced: (data: ManualNodeRequest) =>
+    api.post<Node>('/nodes/manual/advanced', data),
 
   // Delete manual node
   delete: (id: string) => 
@@ -42,4 +85,8 @@ export const nodeApi = {
   // Get share URL
   getShareUrl: (id: string) =>
     api.get<{ url: string }>(`/nodes/${id}/share`),
+
+  // Get protocol field definitions
+  getProtocolFields: (protocol: string) =>
+    api.get<{ protocol: string; fields: ProtocolField[] }>(`/nodes/protocols/${protocol}/fields`),
 }

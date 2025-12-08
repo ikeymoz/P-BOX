@@ -861,6 +861,61 @@ func (g *ConfigGenerator) convertProxies(nodes []ProxyNode) []map[string]interfa
 				proxy["udp"] = true
 			}
 
+		case "anytls":
+			// AnyTLS 协议 (官方文档: https://wiki.metacubex.one/en/config/proxies/anytls/)
+			// 注意: AnyTLS 不需要显式 tls: true，TLS 是隐含的
+			proxy["type"] = "anytls"
+			// 默认启用 UDP
+			if _, ok := proxy["udp"]; !ok {
+				proxy["udp"] = true
+			}
+			// 处理 TLS 配置对象
+			if tls, ok := proxy["tls"].(map[string]interface{}); ok {
+				if sni, ok := tls["server_name"].(string); ok && sni != "" {
+					proxy["sni"] = sni
+				}
+				if insecure, ok := tls["insecure"].(bool); ok {
+					proxy["skip-cert-verify"] = insecure
+				}
+				// 提取 ALPN
+				if alpn, ok := tls["alpn"].([]interface{}); ok && len(alpn) > 0 {
+					proxy["alpn"] = alpn
+				} else if alpn, ok := tls["alpn"].([]string); ok && len(alpn) > 0 {
+					proxy["alpn"] = alpn
+				}
+				// 提取 UTLS fingerprint
+				if utls, ok := tls["utls"].(map[string]interface{}); ok {
+					if fp, ok := utls["fingerprint"].(string); ok && fp != "" {
+						proxy["client-fingerprint"] = fp
+					}
+				}
+				// 删除 tls 对象（AnyTLS 不需要 tls: true）
+				delete(proxy, "tls")
+			}
+			// 客户端指纹（默认 chrome）
+			if _, ok := proxy["client-fingerprint"]; !ok {
+				if fp, ok := proxy["fingerprint"].(string); ok && fp != "" {
+					proxy["client-fingerprint"] = fp
+					delete(proxy, "fingerprint")
+				} else {
+					proxy["client-fingerprint"] = "chrome"
+				}
+			}
+			// 处理 Reality 配置
+			if reality, ok := proxy["reality"].(map[string]interface{}); ok {
+				if enabled, ok := reality["enabled"].(bool); ok && enabled {
+					realityOpts := make(map[string]interface{})
+					if pubKey, ok := reality["public_key"].(string); ok {
+						realityOpts["public-key"] = pubKey
+					}
+					if shortID, ok := reality["short_id"].(string); ok && shortID != "" {
+						realityOpts["short-id"] = shortID
+					}
+					proxy["reality-opts"] = realityOpts
+				}
+				delete(proxy, "reality")
+			}
+
 		case "wireguard", "wg":
 			proxy["type"] = "wireguard"
 			// WireGuard 默认 UDP
@@ -898,9 +953,10 @@ func (g *ConfigGenerator) convertProxies(nodes []ProxyNode) []map[string]interfa
 		// 🔧 通用 TLS 字段转换（适用于所有协议）
 		// 将订阅解析的 tls 对象转换为 Mihomo 需要的扁平字段
 		if tls, ok := proxy["tls"].(map[string]interface{}); ok {
-			// tls.enabled -> tls: true
+			// 记录是否需要启用 TLS
+			tlsEnabled := false
 			if enabled, ok := tls["enabled"].(bool); ok && enabled {
-				proxy["tls"] = true
+				tlsEnabled = true
 			}
 
 			// tls.server_name -> servername（VLESS/VMess 使用 servername）
@@ -915,9 +971,11 @@ func (g *ConfigGenerator) convertProxies(nodes []ProxyNode) []map[string]interfa
 				proxy["skip-cert-verify"] = insecure
 			}
 
-			// tls.alpn -> alpn
-			if alpn, ok := tls["alpn"].([]interface{}); ok && len(alpn) > 0 {
-				if _, exists := proxy["alpn"]; !exists {
+			// tls.alpn -> alpn (支持 []interface{} 和 []string 两种类型)
+			if _, exists := proxy["alpn"]; !exists {
+				if alpn, ok := tls["alpn"].([]interface{}); ok && len(alpn) > 0 {
+					proxy["alpn"] = alpn
+				} else if alpn, ok := tls["alpn"].([]string); ok && len(alpn) > 0 {
 					proxy["alpn"] = alpn
 				}
 			}
@@ -938,8 +996,11 @@ func (g *ConfigGenerator) convertProxies(nodes []ProxyNode) []map[string]interfa
 				}
 			}
 
-			// 删除原始 tls 对象（已转换为扁平字段）
+			// 🔧 先删除 tls 对象，再设置 tls: true（修复顺序问题）
 			delete(proxy, "tls")
+			if tlsEnabled {
+				proxy["tls"] = true
+			}
 		}
 
 		// 🔧 server_name -> servername 的通用转换（VLESS/VMess 使用 servername）

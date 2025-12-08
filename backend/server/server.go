@@ -124,6 +124,8 @@ func (s *Server) setupRoutes() {
 		// 代理设置模块
 		settingsHandler := proxy.NewSettingsHandler(s.config.DataDir)
 		settingsHandler.RegisterRoutes(api.Group("/proxy"))
+		// 设置代理服务引用，用于同步 autoStart 等设置
+		settingsHandler.SetProxyService(s.proxyHandler.GetService())
 
 		// 设置代理设置提供者（让 proxy service 能获取优化配置）
 		s.proxyHandler.GetService().SetSettingsProvider(func() *proxy.ProxySettings {
@@ -136,6 +138,15 @@ func (s *Server) setupRoutes() {
 		// 核心模块
 		coreHandler := core.NewHandler(s.config.DataDir)
 		coreHandler.RegisterRoutes(api.Group("/core"))
+
+		// 设置核心切换回调，同步更新 proxy 模块的核心类型
+		coreHandler.GetService().SetOnCoreSwitch(func(coreType string) {
+			s.proxyHandler.GetService().SetCoreType(coreType)
+			fmt.Printf("🔄 核心已切换为: %s\n", coreType)
+		})
+
+		// 初始化时同步核心类型
+		s.proxyHandler.GetService().SetCoreType(coreHandler.GetService().GetCurrentCore())
 
 		// 订阅模块
 		subHandler := subscription.NewHandler(s.config.DataDir)
@@ -166,10 +177,14 @@ func (s *Server) setupRoutes() {
 		systemHandler := system.NewHandler(s.config.DataDir)
 		systemHandler.RegisterRoutes(api.Group("/system"))
 
-		// 规则集模块
+		// 规则集模块 (Mihomo)
 		rulesetService := ruleset.NewService(s.config.DataDir)
 		rulesetHandler := ruleset.NewHandler(rulesetService)
 		rulesetHandler.RegisterRoutes(api)
+
+		// Sing-Box 规则集模块
+		proxy.SetSingBoxRulesetDir(s.config.DataDir)
+		proxy.RegisterSingBoxRulesetRoutes(api)
 
 		// 测速模块
 		speedtestHandler := speedtest.NewHandler()
@@ -179,6 +194,14 @@ func (s *Server) setupRoutes() {
 		wgService := wireguard.NewService(s.config.DataDir)
 		wgHandler := wireguard.NewHandler(wgService)
 		wgHandler.RegisterRoutes(api)
+
+		// 监听 VPN 启动事件，延迟 5 秒后启动 WireGuard
+		s.proxyHandler.GetService().SetOnStartCallback(func() {
+			go func() {
+				time.Sleep(5 * time.Second)
+				wgService.AutoStartIfEnabled()
+			}()
+		})
 	}
 
 	// WebSocket 路由

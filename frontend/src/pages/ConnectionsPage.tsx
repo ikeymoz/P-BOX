@@ -32,24 +32,61 @@ export default function ConnectionsPage() {
   const [totalDown, setTotalDown] = useState(0)
 
   useEffect(() => {
-    const ws = mihomoApi.createConnectionsWs((data) => {
-      const typedData = data as { 
-        connections?: Connection[]
-        uploadTotal?: number
-        downloadTotal?: number 
-      }
-      if (typedData.connections) {
-        setConnections(typedData.connections)
-      }
-      if (typedData.uploadTotal !== undefined) {
-        setTotalUp(typedData.uploadTotal)
-      }
-      if (typedData.downloadTotal !== undefined) {
-        setTotalDown(typedData.downloadTotal)
-      }
-    })
+    let ws: WebSocket | null = null
+    let pollInterval: NodeJS.Timeout | null = null
+    let usePolling = false
 
-    return () => ws.close()
+    const handleData = (data: { 
+      connections?: Connection[]
+      uploadTotal?: number
+      downloadTotal?: number 
+    }) => {
+      if (data.connections) {
+        setConnections(data.connections)
+      }
+      if (data.uploadTotal !== undefined) {
+        setTotalUp(data.uploadTotal)
+      }
+      if (data.downloadTotal !== undefined) {
+        setTotalDown(data.downloadTotal)
+      }
+    }
+
+    // HTTP 轮询作为后备
+    const startPolling = () => {
+      if (pollInterval) return
+      usePolling = true
+      const poll = async () => {
+        try {
+          const data = await mihomoApi.getConnections()
+          handleData(data as { connections?: Connection[], uploadTotal?: number, downloadTotal?: number })
+        } catch {
+          // ignore
+        }
+      }
+      poll()
+      pollInterval = setInterval(poll, 1000)
+    }
+
+    // 优先使用 WebSocket
+    try {
+      ws = mihomoApi.createConnectionsWs((data) => {
+        handleData(data as { connections?: Connection[], uploadTotal?: number, downloadTotal?: number })
+      })
+      ws.onerror = () => {
+        if (!usePolling) startPolling()
+      }
+      ws.onclose = () => {
+        if (!usePolling) startPolling()
+      }
+    } catch {
+      startPolling()
+    }
+
+    return () => {
+      ws?.close()
+      if (pollInterval) clearInterval(pollInterval)
+    }
   }, [])
 
   const handleCloseAll = async () => {

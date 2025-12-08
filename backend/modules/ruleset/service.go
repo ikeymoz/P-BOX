@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,9 +25,12 @@ type RuleFile struct {
 
 // RuleSetConfig 规则集配置
 type RuleSetConfig struct {
-	AutoUpdate     bool   `json:"autoUpdate"`
-	UpdateInterval int    `json:"updateInterval"` // 更新间隔（天）
-	LastUpdate     string `json:"lastUpdate"`
+	AutoUpdate     bool     `json:"autoUpdate"`
+	UpdateInterval int      `json:"updateInterval"` // 更新间隔（天）
+	LastUpdate     string   `json:"lastUpdate"`
+	GitHubProxy    string   `json:"githubProxy"`   // 当前使用的代理
+	GitHubProxies  []string `json:"githubProxies"` // 默认代理列表
+	CustomProxies  []string `json:"customProxies"` // 用户自定义代理
 }
 
 // Service 规则集管理服务
@@ -337,4 +341,100 @@ func (s *Service) autoUpdateLoop() {
 // GetRulesetDir 获取规则集目录
 func (s *Service) GetRulesetDir() string {
 	return s.rulesetDir
+}
+
+// applyGitHubProxy 应用 GitHub 代理到 URL
+func applyGitHubProxy(url, proxy string) string {
+	if proxy == "" || proxy == "__custom__" {
+		return url
+	}
+	// 处理 GitHub 相关的 URL
+	// https://raw.githubusercontent.com/xxx -> proxy/https://raw.githubusercontent.com/xxx
+	// https://github.com/xxx -> proxy/https://github.com/xxx
+	if strings.Contains(url, "github") || strings.Contains(url, "githubusercontent") {
+		return strings.TrimSuffix(proxy, "/") + "/" + url
+	}
+	return url
+}
+
+// DownloadAllFilesWithProxy 使用代理下载所有规则文件
+func (s *Service) DownloadAllFilesWithProxy(proxy string) (int, int, []string) {
+	s.mu.Lock()
+	if s.updating {
+		s.mu.Unlock()
+		return 0, 0, []string{"正在更新中，请稍后再试"}
+	}
+	s.updating = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.updating = false
+		s.mu.Unlock()
+	}()
+
+	var success, failed int
+	var errors []string
+
+	// 收集所有下载任务
+	type downloadTask struct {
+		name string
+		url  string
+		path string
+	}
+	var tasks []downloadTask
+
+	for _, f := range s.GetGeoFiles() {
+		tasks = append(tasks, downloadTask{f.Name, f.URL, f.Path})
+	}
+	for _, f := range s.GetRuleProviderFiles() {
+		tasks = append(tasks, downloadTask{f.Name, f.URL, f.Path})
+	}
+
+	// 使用 5 个并发线程下载
+	const maxConcurrent = 5
+	taskChan := make(chan downloadTask, len(tasks))
+	resultChan := make(chan error, len(tasks))
+	var wg sync.WaitGroup
+
+	// 启动 worker
+	for i := 0; i < maxConcurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range taskChan {
+				url := applyGitHubProxy(task.url, proxy)
+				err := s.DownloadFile(url, task.path)
+				resultChan <- err
+			}
+		}()
+	}
+
+	// 发送任务
+	for _, task := range tasks {
+		taskChan <- task
+	}
+	close(taskChan)
+
+	// 等待所有下载完成
+	wg.Wait()
+	close(resultChan)
+
+	// 统计结果
+	for err := range resultChan {
+		if err != nil {
+			failed++
+			errors = append(errors, err.Error())
+		} else {
+			success++
+		}
+	}
+
+	// 更新最后更新时间
+	s.mu.Lock()
+	s.config.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
+	s.saveConfig()
+	s.mu.Unlock()
+
+	return success, failed, errors
 }

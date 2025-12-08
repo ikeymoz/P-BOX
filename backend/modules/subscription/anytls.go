@@ -8,8 +8,9 @@ import (
 
 // AnyTLSConfig AnyTLS 配置结构
 type AnyTLSConfig struct {
-	Password string     `json:"password"`
-	TLS      *TLSConfig `json:"tls,omitempty"`
+	Password string         `json:"password"`
+	TLS      *TLSConfig     `json:"tls,omitempty"`
+	Reality  *RealityConfig `json:"reality,omitempty"`
 }
 
 // ParseAnyTLSURL 解析 AnyTLS 链接
@@ -81,7 +82,30 @@ func ParseAnyTLSURL(anytlsURL string) (*ProxyNode, error) {
 		tlsConfig.Insecure = true
 	}
 
+	// 解析 fingerprint (uTLS)
+	if fp := params["fp"]; fp != "" {
+		tlsConfig.UTLS = &UTLSConfig{
+			Enabled:     true,
+			Fingerprint: fp,
+		}
+	}
+
 	config.TLS = tlsConfig
+
+	// 解析 Reality 配置
+	security := params["security"]
+	if security == "reality" || params["pbk"] != "" {
+		shortID := params["sid"]
+		if shortID == "None" || shortID == "null" {
+			shortID = ""
+		}
+
+		config.Reality = &RealityConfig{
+			Enabled:   true,
+			PublicKey: params["pbk"],
+			ShortID:   shortID,
+		}
+	}
 
 	// 转换为 JSON 字符串
 	configJSON, err := ToJSONString(config)

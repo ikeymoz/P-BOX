@@ -286,3 +286,22 @@ func (s *Service) UpdateClient(serverID, clientID, name, description string, ena
 	}
 	return nil, fmt.Errorf("客户端不存在")
 }
+
+// AutoStartIfEnabled 自动启动已启用开机启动的服务器
+func (s *Service) AutoStartIfEnabled() {
+	if !IsLinux() {
+		return // 非 Linux 不支持
+	}
+
+	servers := s.GetServers()
+	for _, server := range servers {
+		if server.AutoStart && server.Enabled {
+			fmt.Printf("🔄 自动启动 WireGuard 服务器: %s (%s)\n", server.Name, server.Tag)
+			if err := s.ApplyConfig(server.ID); err != nil {
+				fmt.Printf("⚠️ WireGuard 自动启动失败: %v\n", err)
+			} else {
+				fmt.Printf("✅ WireGuard 服务器 %s 已启动\n", server.Name)
+			}
+		}
+	}
+}

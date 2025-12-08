@@ -194,6 +194,46 @@ func (s *Service) AddManual(name, nodeType, server string, port int, config stri
 	return node, s.saveManualNodes()
 }
 
+// AddManualAdvanced 高级手动添加节点（支持完整配置）
+func (s *Service) AddManualAdvanced(name, nodeType, server string, port int, config map[string]interface{}) (*Node, error) {
+	// 将 config map 转换为 JSON 字符串
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("配置序列化失败: %w", err)
+	}
+
+	node := &Node{
+		ID:         uuid.New().String(),
+		Name:       name,
+		Type:       nodeType,
+		Server:     server,
+		ServerPort: port,
+		IsManual:   true,
+		Enabled:    true,
+		Delay:      -1,
+		Config:     string(configJSON),
+	}
+
+	// 生成分享链接
+	shareURL := s.generateShareURLFromConfig(node, config)
+	if shareURL != "" {
+		node.ShareURL = shareURL
+	}
+
+	s.mu.Lock()
+	s.manualNodes[node.ID] = node
+	s.mu.Unlock()
+
+	return node, s.saveManualNodes()
+}
+
+// generateShareURLFromConfig 根据配置生成分享链接
+func (s *Service) generateShareURLFromConfig(node *Node, config map[string]interface{}) string {
+	// 基于节点类型生成对应的分享链接
+	// 这里简化处理，后续可以根据需要完善
+	return ""
+}
+
 // ImportURL 从URL导入节点
 func (s *Service) ImportURL(url string) (*Node, error) {
 	// 使用订阅模块的解析器

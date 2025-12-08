@@ -19,6 +19,11 @@ func NewHandler(dataDir string) *Handler {
 	return h
 }
 
+// GetService 获取服务实例
+func (h *Handler) GetService() *Service {
+	return h.service
+}
+
 func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/status", h.GetStatus)
 	r.GET("/versions", h.GetVersions)

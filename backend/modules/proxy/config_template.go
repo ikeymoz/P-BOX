@@ -50,6 +50,15 @@ type ConfigTemplate struct {
 // 使用现代扁平化 Apple 风格图标
 func GetDefaultProxyGroups() []ProxyGroupTemplate {
 	groups := []ProxyGroupTemplate{
+		// 0. GLOBAL - 内置代理组，用于 global 模式和 Web 面板排序
+		{
+			Name:        "GLOBAL",
+			Type:        "select",
+			Icon:        "globe",
+			Description: "全局代理模式默认出口，包含所有策略组",
+			Proxies:     []string{"节点选择", "自动选择", "故障转移", "香港节点", "台湾节点", "日本节点", "新加坡节点", "美国节点", "手动节点", "其他节点", "DIRECT"},
+			UseAll:      false,
+		},
 		// 1. 自动选择 - 放在最前面
 		{
 			Name:        "自动选择",
@@ -232,7 +241,7 @@ func GetDefaultProxyGroups() []ProxyGroupTemplate {
 			Interval:    300,
 			Tolerance:   50,
 			Lazy:        true,
-			Filter:      "(?i)台湾|台灣|臺灣|台北|台中|新北|彰化|CHT|HINET|🇹🇼|🇨🇳|TW|Taiwan|TAIWAN",
+			Filter:      "(?i)台湾|台灣|臺灣|台北|台中|新北|彰化|CHT|HINET|🇨🇳|🇹🇼|TW|Taiwan|TAIWAN",
 			UseAll:      true,
 		},
 		// 19. 日本节点

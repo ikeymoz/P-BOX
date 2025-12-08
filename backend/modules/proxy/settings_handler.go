@@ -13,9 +13,10 @@ import (
 
 // SettingsHandler 代理设置处理器
 type SettingsHandler struct {
-	dataDir  string
-	settings *ProxySettings
-	mu       sync.RWMutex
+	dataDir      string
+	settings     *ProxySettings
+	mu           sync.RWMutex
+	proxyService *Service // 代理服务引用，用于同步配置
 }
 
 // NewSettingsHandler 创建设置处理器
@@ -27,6 +28,11 @@ func NewSettingsHandler(dataDir string) *SettingsHandler {
 	// 加载已保存的设置
 	h.loadSettings()
 	return h
+}
+
+// SetProxyService 设置代理服务引用
+func (h *SettingsHandler) SetProxyService(s *Service) {
+	h.proxyService = s
 }
 
 // RegisterRoutes 注册路由
@@ -120,6 +126,14 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 			"message": "Failed to save settings: " + err.Error(),
 		})
 		return
+	}
+
+	// 同步到 proxy 服务
+	if h.proxyService != nil {
+		h.proxyService.PatchConfig(map[string]interface{}{
+			"autoStart":      settings.AutoStart,
+			"autoStartDelay": float64(settings.AutoStartDelay),
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{

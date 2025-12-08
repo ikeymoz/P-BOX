@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus, RefreshCw, Trash2, Zap, Copy, Loader2, Globe, Server, Search, X, Filter, ChevronDown } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, Zap, Copy, Loader2, Globe, Server, Search, X, Filter, ChevronDown, Link } from 'lucide-react'
 import { nodeApi, Node } from '@/api/node'
 import { subscriptionApi, Subscription } from '@/api/subscription'
 import { cn, getLatencyColor, formatLatency } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
+import { AddNodeDialog } from '@/components/AddNodeDialog'
 
 // 国家/地区关键词映射
 const COUNTRY_KEYWORDS: Record<string, string[]> = {
@@ -38,6 +39,7 @@ export default function NodesPage() {
   const [loading, setLoading] = useState(true)
   const [testing, setTesting] = useState<string | null>(null)
   const [showImportModal, setShowImportModal] = useState(false)
+  const [showAddNodeDialog, setShowAddNodeDialog] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   
   // 搜索和过滤状态
@@ -215,6 +217,13 @@ export default function NodesPage() {
           </button>
           <button
             onClick={() => setShowImportModal(true)}
+            className="control-btn secondary text-xs"
+          >
+            <Link className="w-3 h-3" />
+            {t('nodes.importLink')}
+          </button>
+          <button
+            onClick={() => setShowAddNodeDialog(true)}
             className="control-btn primary text-xs"
           >
             <Plus className="w-3 h-3" />
@@ -222,6 +231,13 @@ export default function NodesPage() {
           </button>
         </div>
       </div>
+
+      {/* 添加节点对话框 */}
+      <AddNodeDialog
+        open={showAddNodeDialog}
+        onOpenChange={setShowAddNodeDialog}
+        onSuccess={fetchData}
+      />
 
       {/* 搜索和过滤 */}
       <div className="space-y-3">

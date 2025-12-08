@@ -18,7 +18,18 @@ interface RuleSetConfig {
   autoUpdate: boolean
   updateInterval: number
   lastUpdate: string
+  githubProxy: string
+  githubProxies: string[]
+  customProxies: string[]
 }
+
+// 默认 GitHub 代理列表
+const defaultGitHubProxies = [
+  'https://ghfast.top',
+  'https://ghproxy.link',
+  'https://gh-proxy.com',
+  'https://ghps.cc',
+]
 
 // API 基础路径
 const API_BASE = '/api'
@@ -31,8 +42,12 @@ export default function RulesetPage() {
   const [config, setConfig] = useState<RuleSetConfig>({
     autoUpdate: true,
     updateInterval: 1,
-    lastUpdate: ''
+    lastUpdate: '',
+    githubProxy: '',
+    githubProxies: defaultGitHubProxies,
+    customProxies: [],
   })
+  const [newProxy, setNewProxy] = useState('')
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -52,7 +67,15 @@ export default function RulesetPage() {
       ])
       setGeoFiles(geoRes.data || [])
       setProviderFiles(providerRes.data || [])
-      setConfig(configRes.data || { autoUpdate: true, updateInterval: 1, lastUpdate: '' })
+      const loadedConfig = configRes.data || {}
+      setConfig({
+        autoUpdate: loadedConfig.autoUpdate ?? true,
+        updateInterval: loadedConfig.updateInterval ?? 1,
+        lastUpdate: loadedConfig.lastUpdate ?? '',
+        githubProxy: loadedConfig.githubProxy ?? '',
+        githubProxies: loadedConfig.githubProxies?.length ? loadedConfig.githubProxies : defaultGitHubProxies,
+        customProxies: loadedConfig.customProxies ?? [],
+      })
     } catch {
       // Ignore errors
     } finally {
@@ -77,7 +100,11 @@ export default function RulesetPage() {
   const handleUpdateAll = async () => {
     try {
       setUpdating(true)
-      await fetch(`${API_BASE}/ruleset/update`, { method: 'POST' })
+      await fetch(`${API_BASE}/ruleset/update`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ githubProxy: config.githubProxy })
+      })
       alert(t('ruleset.updateStarted') || '开始更新规则文件')
     } catch {
       alert(t('common.error') || '启动更新失败')
@@ -191,7 +218,7 @@ export default function RulesetPage() {
           </label>
           <div className="flex items-center gap-2">
             <span className={cn(
-              'text-sm',
+              'text-sm whitespace-nowrap',
               themeStyle === 'apple-glass' ? 'text-slate-500' : 'text-slate-400'
             )}>{t('ruleset.interval') || '更新间隔'}:</span>
             <select
@@ -206,10 +233,75 @@ export default function RulesetPage() {
               <option value={7}>7 天</option>
             </select>
           </div>
+          <div className="flex items-center gap-2">
+            <span className={cn(
+              'text-sm whitespace-nowrap',
+              themeStyle === 'apple-glass' ? 'text-slate-500' : 'text-slate-400'
+            )}>GitHub代理:</span>
+            {config.githubProxy === '__custom__' ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newProxy}
+                  onChange={(e) => setNewProxy(e.target.value)}
+                  placeholder="https://proxy.example.com"
+                  className="form-input text-sm py-1.5 w-48"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    if (newProxy && newProxy.startsWith('https://')) {
+                      const proxies = [...(config.customProxies || []), newProxy]
+                      setConfig({ ...config, customProxies: proxies, githubProxy: newProxy })
+                      setNewProxy('')
+                    }
+                  }}
+                  disabled={!newProxy || !newProxy.startsWith('https://')}
+                  className={cn(
+                    'control-btn text-xs px-3 whitespace-nowrap',
+                    newProxy && newProxy.startsWith('https://') ? 'primary' : 'secondary opacity-50'
+                  )}
+                >
+                  确定
+                </button>
+                <button
+                  onClick={() => {
+                    setConfig({ ...config, githubProxy: '' })
+                    setNewProxy('')
+                  }}
+                  className="control-btn secondary text-xs px-2 whitespace-nowrap"
+                >
+                  取消
+                </button>
+              </div>
+            ) : (
+              <select
+                value={config.githubProxy}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setConfig({ ...config, githubProxy: '__custom__' })
+                  } else {
+                    setConfig({ ...config, githubProxy: e.target.value })
+                    setNewProxy('')
+                  }
+                }}
+                className="form-input text-sm py-1.5 w-48"
+              >
+                <option value="">直连(无代理)</option>
+                {config.githubProxies?.filter(p => p).map(proxy => (
+                  <option key={proxy} value={proxy}>{proxy.replace('https://', '')}</option>
+                ))}
+                {config.customProxies?.map(proxy => (
+                  <option key={proxy} value={proxy}>★ {proxy.replace('https://', '')}</option>
+                ))}
+                <option value="__custom__">+ 添加自定义...</option>
+              </select>
+            )}
+          </div>
           <button
             onClick={handleSaveConfig}
             disabled={saving}
-            className="control-btn secondary text-xs"
+            className="control-btn secondary text-xs whitespace-nowrap"
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
             {t('common.save') || '保存设置'}

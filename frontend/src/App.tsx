@@ -18,6 +18,8 @@ import ProxySettingsPage from '@/pages/ProxySettingsPage'
 import LoginPage from '@/pages/LoginPage'
 import WireGuardPage from '@/pages/WireGuardPage'
 import LegalPage from '@/pages/LegalPage'
+import SingBoxSettingsPage from '@/pages/SingBoxSettingsPage'
+import SingBoxRulesetPage from '@/pages/SingBoxRulesetPage'
 import { authApi } from '@/api/auth'
 
 // Auth guard component
@@ -77,6 +79,8 @@ function App() {
                 <Route path="/config-generator" element={<ConfigGeneratorPage />} />
                 <Route path="/core-manage" element={<CoreManagePage />} />
                 <Route path="/proxy-settings" element={<ProxySettingsPage />} />
+                <Route path="/singbox-settings" element={<SingBoxSettingsPage />} />
+                <Route path="/singbox-ruleset" element={<SingBoxRulesetPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/wireguard" element={<WireGuardPage />} />
                 <Route path="/legal" element={<LegalPage />} />

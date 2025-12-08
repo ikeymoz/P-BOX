@@ -23,10 +23,12 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("", h.List)
 	r.POST("/import", h.ImportURL)
 	r.POST("/manual", h.AddManual)
+	r.POST("/manual/advanced", h.AddManualAdvanced)
 	r.DELETE("/:id", h.Delete)
 	r.POST("/test", h.TestDelay)
 	r.POST("/test-batch", h.TestDelayBatch)
 	r.GET("/:id/share", h.GetShareURL)
+	r.GET("/protocols/:protocol/fields", h.GetProtocolFields)
 }
 
 // GetService 获取节点服务
@@ -208,6 +210,61 @@ func (h *Handler) GetShareURL(c *gin.Context) {
 		"message": "success",
 		"data": gin.H{
 			"url": url,
+		},
+	})
+}
+
+// AddManualAdvanced 高级手动添加节点（支持完整配置）
+func (h *Handler) AddManualAdvanced(c *gin.Context) {
+	var req struct {
+		Name       string                 `json:"name" binding:"required"`
+		Type       string                 `json:"type" binding:"required"`
+		Server     string                 `json:"server" binding:"required"`
+		ServerPort int                    `json:"server_port" binding:"required"`
+		Config     map[string]interface{} `json:"config" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	node, err := h.service.AddManualAdvanced(req.Name, req.Type, req.Server, req.ServerPort, req.Config)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    node,
+	})
+}
+
+// GetProtocolFields 获取协议字段定义
+func (h *Handler) GetProtocolFields(c *gin.Context) {
+	protocol := c.Param("protocol")
+	fields := GetProtocolFieldDefinitions(protocol)
+	if fields == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "不支持的协议类型",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"protocol": protocol,
+			"fields":   fields,
 		},
 	})
 }

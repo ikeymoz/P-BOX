@@ -55,6 +55,7 @@ type Service struct {
 	cores            map[string]*Core
 	downloadProgress map[string]*DownloadProgress
 	mu               sync.RWMutex
+	onCoreSwitch     func(coreType string) // 核心切换回调
 }
 
 // 持久化状态
@@ -337,10 +338,29 @@ func (s *Service) SwitchCore(coreType string) error {
 
 	s.currentCore = CoreType(coreType)
 
+	// 通知 proxy 模块切换核心
+	if s.onCoreSwitch != nil {
+		s.onCoreSwitch(coreType)
+	}
+
 	// 持久化保存
 	go s.saveStatus()
 
 	return nil
+}
+
+// SetOnCoreSwitch 设置核心切换回调
+func (s *Service) SetOnCoreSwitch(callback func(coreType string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onCoreSwitch = callback
+}
+
+// GetCurrentCore 获取当前核心类型
+func (s *Service) GetCurrentCore() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return string(s.currentCore)
 }
 
 func (s *Service) DownloadCore(coreType string) error {

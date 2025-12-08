@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import {
   Users,
   List,
@@ -25,7 +26,16 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
+import { useCoreStore } from '@/stores/coreStore'
 import { api } from '@/api/client'
+import { singboxApi } from '@/api/singbox'
+import { 
+  loadSingBoxTemplate, 
+  resetSingBoxTemplate,
+  defaultSingBoxTemplate,
+  type SingBoxTemplate
+} from '@/api/singboxTemplate'
+import { ErrorDialog } from '@/components/ErrorDialog'
 
 // 默认代理组名称翻译映射 (中文 -> 英文)
 const GROUP_NAME_MAP: Record<string, string> = {
@@ -61,7 +71,8 @@ const GROUP_NAME_MAP: Record<string, string> = {
 
 // 翻译代理组名称 (当语言为英文时)
 const translateGroupName = (name: string, lang: string): string => {
-  if (lang === 'zh') return name
+  // lang 可能是 'zh', 'zh-CN', 'zh-TW' 等，统一检查前缀
+  if (lang.startsWith('zh')) return name
   return GROUP_NAME_MAP[name] || name
 }
 
@@ -109,11 +120,19 @@ interface ConfigTemplate {
 export default function ConfigGeneratorPage() {
   const { t } = useTranslation()
   const { themeStyle } = useThemeStore()
+  const { activeCore } = useCoreStore()
   const [activeTab, setActiveTab] = useState('groups')
+  // Mihomo 模板
   const [template, setTemplate] = useState<ConfigTemplate | null>(null)
+  // Sing-Box 原始模板 (用于保存和重置)
+  const [, setSingboxTemplate] = useState<SingBoxTemplate | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // 错误弹窗状态
+  const [showError, setShowError] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
 
+  // 两种核心类型都显示相同的 tabs
   const tabs = [
     { id: 'groups', icon: Users, label: t('configGenerator.proxyGroups') || '代理组' },
     { id: 'rules', icon: List, label: t('configGenerator.rules') || '规则' },
@@ -121,19 +140,75 @@ export default function ConfigGeneratorPage() {
     { id: 'preview', icon: Eye, label: t('configGenerator.preview') || '预览' },
   ]
 
-  // 加载配置模板
+  // 加载配置模板 - 根据核心类型
   const loadTemplate = async () => {
     try {
       setLoading(true)
-      const data = await api.get<ConfigTemplate>('/proxy/template')
-      setTemplate(data)
+      if (activeCore === 'singbox') {
+        // 加载 Sing-Box 模板 (从后端 API)
+        const sbTemplate = await loadSingBoxTemplate()
+        setSingboxTemplate(sbTemplate)
+        // 同时设置一个兼容的 template 用于 UI
+        setTemplate({
+          proxyGroups: (sbTemplate.proxyGroups || []).map(g => ({
+            name: g.name || g.tag,  // 使用中文名称显示，如果没有则用 tag
+            type: g.type === 'urltest' ? 'url-test' : g.type,
+            icon: g.icon || '',
+            description: `${g.description || ''} (${g.tag})`,  // 在描述中显示 tag
+            enabled: g.enabled ?? true,
+            proxies: g.outbounds || [],
+            useAll: false
+          })),
+          rules: (sbTemplate.rules || []).map((r) => {
+            // rule_set 可能是 string 或 string[]
+            let payload = ''
+            if (r.rule_set) {
+              payload = Array.isArray(r.rule_set) ? r.rule_set.join(',') : String(r.rule_set)
+            } else if (r.domain_suffix) {
+              payload = r.domain_suffix.join(',')
+            } else if (r.ip_cidr) {
+              payload = r.ip_cidr.join(',')
+            }
+            return {
+              type: r.rule_set ? 'RULE-SET' : r.domain_suffix ? 'DOMAIN-SUFFIX' : r.ip_cidr ? 'IP-CIDR' : 'MATCH',
+              payload,
+              proxy: r.outbound || '',
+              noResolve: false,
+              description: r.action || ''
+            }
+          }),
+          ruleProviders: (sbTemplate.ruleSets || []).map(rs => ({
+            name: rs.tag,
+            type: rs.type,
+            behavior: rs.format,
+            url: rs.url || '',
+            path: rs.path || '',
+            interval: 86400,
+            format: rs.format,
+            description: ''
+          }))
+        })
+      } else {
+        // 加载 Mihomo 模板
+        const data = await api.get<ConfigTemplate>('/proxy/template')
+        setTemplate(data)
+      }
     } catch {
       // 使用默认模板
-      setTemplate({
-        proxyGroups: [],
-        rules: [],
-        ruleProviders: []
-      })
+      if (activeCore === 'singbox') {
+        setSingboxTemplate(defaultSingBoxTemplate)
+        setTemplate({
+          proxyGroups: [],
+          rules: [],
+          ruleProviders: []
+        })
+      } else {
+        setTemplate({
+          proxyGroups: [],
+          rules: [],
+          ruleProviders: []
+        })
+      }
     } finally {
       setLoading(false)
     }
@@ -141,14 +216,20 @@ export default function ConfigGeneratorPage() {
 
   useEffect(() => {
     loadTemplate()
-  }, [])
+  }, [activeCore])
 
   // 重置为默认
   const resetTemplate = async () => {
     if (!confirm(t('configGenerator.confirmReset') || '确定要重置为默认配置吗？')) return
     try {
       setSaving(true)
-      await api.post('/proxy/template/reset', {})
+      if (activeCore === 'singbox') {
+        // 重置 Sing-Box 模板 (从后端获取默认值)
+        const newTemplate = await resetSingBoxTemplate()
+        setSingboxTemplate(newTemplate)
+      } else {
+        await api.post('/proxy/template/reset', {})
+      }
       await loadTemplate()
     } catch {
       // Ignore
@@ -157,17 +238,50 @@ export default function ConfigGeneratorPage() {
     }
   }
 
-  // 生成配置
+  // 生成配置 - 根据核心类型
   const generateConfig = async () => {
     try {
       setSaving(true)
-      await api.post('/proxy/generate', { nodes: [] })
+      
+      if (activeCore === 'singbox') {
+        // 生成 Sing-Box 配置
+        const settings = singboxApi.loadSettings()
+        const result = await singboxApi.generateConfig(settings)
+        
+        // 检查是否有验证错误 (code === 2 表示验证失败)
+        if (result.code === 2 && result.data?.validationError) {
+          setErrorMessage(result.data.validationError)
+          setShowError(true)
+          return
+        }
+        
+        // 检查其他错误
+        if (result.code !== 0) {
+          setErrorMessage(result.message || '生成配置失败')
+          setShowError(true)
+          return
+        }
+        
+        // 验证成功提示
+        toast.success(t('configGenerator.generateSuccess') || '配置生成成功', {
+          description: `${t('configGenerator.validationPassed') || '配置验证通过'} - ${result.data?.nodeCount || 0} ${t('nodes.title') || '节点'}`
+        })
+      } else {
+        // 生成 Mihomo 配置
+        await api.post('/proxy/generate', { nodes: [] })
+        // 刷新模板以获取最新配置
+        await loadTemplate()
+        
+        // 成功提示
+        toast.success(t('configGenerator.generateSuccess') || '配置生成成功')
+      }
+      
       // 切换到预览 tab
       setActiveTab('preview')
-      // 刷新模板以获取最新配置
-      await loadTemplate()
-    } catch {
-      // Ignore
+    } catch (err) {
+      console.error('生成配置失败:', err)
+      setErrorMessage(err instanceof Error ? err.message : '生成配置失败')
+      setShowError(true)
     } finally {
       setSaving(false)
     }
@@ -186,21 +300,41 @@ export default function ConfigGeneratorPage() {
 
   return (
     <div className="space-y-4">
-      {/* 顶部操作栏 */}
-      <div className="flex items-center justify-end gap-2">
-        <button
-          onClick={generateConfig}
-          disabled={saving}
-          className={cn(
-            'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-            themeStyle === 'apple-glass'
-              ? 'bg-blue-500 text-white hover:bg-blue-600'
-              : 'bg-cyan-500 text-white hover:bg-cyan-600'
-          )}
-        >
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-          {saving ? t('configGenerator.generating') : t('configGenerator.generate')}
-        </button>
+      {/* 顶部标题和核心类型 */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className={cn(
+            'text-lg font-semibold',
+            themeStyle === 'apple-glass' ? 'text-slate-800' : 'text-white'
+          )}>{t('configGenerator.title') || '配置生成'}</h2>
+          <p className={cn(
+            'text-sm mt-1',
+            themeStyle === 'apple-glass' ? 'text-slate-500' : 'text-slate-400'
+          )}>
+            当前核心: <span className={cn(
+              'font-medium px-2 py-0.5 rounded',
+              activeCore === 'singbox'
+                ? 'bg-purple-500/20 text-purple-500'
+                : 'bg-cyan-500/20 text-cyan-500'
+            )}>{activeCore === 'singbox' ? 'Sing-Box' : 'Mihomo'}</span>
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={generateConfig}
+            disabled={saving}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+              activeCore === 'singbox'
+                ? 'bg-purple-500 text-white hover:bg-purple-600'
+                : themeStyle === 'apple-glass'
+                  ? 'bg-blue-500 text-white hover:bg-blue-600'
+                  : 'bg-cyan-500 text-white hover:bg-cyan-600'
+            )}
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {saving ? t('configGenerator.generating') : t('configGenerator.generate')}
+          </button>
         <button
           onClick={resetTemplate}
           disabled={saving}
@@ -214,6 +348,7 @@ export default function ConfigGeneratorPage() {
           <RotateCcw className="w-4 h-4" />
           {t('configGenerator.resetDefault') || '重置默认'}
         </button>
+        </div>
       </div>
 
       {/* 标签页 */}
@@ -273,6 +408,14 @@ export default function ConfigGeneratorPage() {
           )}
         </div>
       )}
+
+      {/* 错误弹窗 */}
+      <ErrorDialog
+        open={showError}
+        onOpenChange={setShowError}
+        title={t('configGenerator.validationError') || '配置验证失败'}
+        error={errorMessage}
+      />
     </div>
   )
 }
@@ -935,11 +1078,19 @@ function ProvidersTab({ template, setTemplate }: { template: ConfigTemplate, set
                           </button>
                         </div>
                       ) : provider.url && (
-                        <div className={cn(
-                          'text-[10px] truncate mt-1 cursor-pointer hover:underline',
-                          themeStyle === 'apple-glass' ? 'text-slate-400' : 'text-slate-500'
-                        )} onClick={() => handleEditUrl(provider.name, provider.url)}>
-                          {provider.url}
+                        <div 
+                          className={cn(
+                            'text-[10px] truncate mt-1 cursor-pointer transition-all duration-200',
+                            copiedUrl === provider.url 
+                              ? 'text-green-500 font-medium' 
+                              : themeStyle === 'apple-glass' 
+                                ? 'text-slate-400 hover:text-blue-500' 
+                                : 'text-slate-500 hover:text-blue-400'
+                          )} 
+                          onClick={() => copyUrl(provider.url)}
+                          title="点击复制 URL"
+                        >
+                          {copiedUrl === provider.url ? '✓ 已复制!' : provider.url}
                         </div>
                       )}
                     </div>
@@ -996,10 +1147,11 @@ function ProvidersTab({ template, setTemplate }: { template: ConfigTemplate, set
   )
 }
 
-// 预览 Tab - 加载实际生成的 config.yaml
+// 预览 Tab - 根据核心类型加载配置
 function PreviewTab() {
   const { t } = useTranslation()
   const { themeStyle } = useThemeStore()
+  const { activeCore } = useCoreStore()
   const [copied, setCopied] = useState(false)
   const [configContent, setConfigContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -1008,14 +1160,29 @@ function PreviewTab() {
   const loadConfig = async () => {
     try {
       setLoading(true)
-      const data = await api.get<{ content: string }>('/proxy/config/preview')
-      if (data?.content) {
-        setConfigContent(data.content)
+      
+      if (activeCore === 'singbox') {
+        // 加载 Sing-Box 配置
+        try {
+          const content = await singboxApi.getConfigPreview()
+          setConfigContent(content)
+        } catch {
+          setConfigContent('// Sing-Box 配置文件未生成\n// 请先点击上方的「生成配置」按钮')
+        }
       } else {
-        setConfigContent('# 配置文件未生成\n# 请先点击上方的「生成配置」按钮')
+        // 加载 Mihomo 配置
+        const data = await api.get<{ content: string }>('/proxy/config/preview')
+        if (data?.content) {
+          setConfigContent(data.content)
+        } else {
+          setConfigContent('# 配置文件未生成\n# 请先点击上方的「生成配置」按钮')
+        }
       }
     } catch {
-      setConfigContent('# 配置文件未生成\n# 请先点击上方的「生成配置」按钮')
+      const emptyMsg = activeCore === 'singbox' 
+        ? '// Sing-Box 配置文件未生成\n// 请先点击上方的「生成配置」按钮'
+        : '# 配置文件未生成\n# 请先点击上方的「生成配置」按钮'
+      setConfigContent(emptyMsg)
     } finally {
       setLoading(false)
     }
@@ -1023,7 +1190,7 @@ function PreviewTab() {
 
   useEffect(() => {
     loadConfig()
-  }, [])
+  }, [activeCore])
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(configContent)
@@ -1042,7 +1209,9 @@ function PreviewTab() {
           'text-sm',
           themeStyle === 'apple-glass' ? 'text-slate-500' : 'text-slate-400'
         )}>
-          {t('configGenerator.previewDescription') || '预览生成的 config.yaml 配置文件'}
+          {activeCore === 'singbox' 
+            ? '预览生成的 Sing-Box 配置文件 (JSON 格式)'
+            : (t('configGenerator.previewDescription') || '预览生成的 config.yaml 配置文件')}
         </p>
         <div className="flex gap-2">
           <button
@@ -1203,6 +1372,47 @@ function EditGroupDialog({
                 'block text-sm font-medium mb-1.5',
                 themeStyle === 'apple-glass' ? 'text-slate-700' : 'text-slate-300'
               )}>代理列表（每行一个）</label>
+              
+              {/* 快捷分组按钮 */}
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {[
+                  { label: '节点选择', value: '节点选择' },
+                  { label: '自动选择', value: '自动选择' },
+                  { label: '故障转移', value: '故障转移' },
+                  { label: '直连', value: '直连' },
+                  { label: '香港节点', value: '香港节点' },
+                  { label: '台湾节点', value: '台湾节点' },
+                  { label: '日本节点', value: '日本节点' },
+                  { label: '新加坡节点', value: '新加坡节点' },
+                  { label: '美国节点', value: '美国节点' },
+                  { label: '手动节点', value: '手动节点' },
+                  { label: '其他节点', value: '其他节点' },
+                ].map(item => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => {
+                      const current = group.proxies || []
+                      if (!current.includes(item.value)) {
+                        onChange({ ...group, proxies: [...current, item.value] })
+                      }
+                    }}
+                    className={cn(
+                      'px-2 py-1 text-xs rounded-md transition-colors',
+                      group.proxies?.includes(item.value)
+                        ? themeStyle === 'apple-glass'
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-cyan-500 text-white'
+                        : themeStyle === 'apple-glass'
+                          ? 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          : 'bg-white/10 text-slate-300 hover:bg-white/20'
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              
               <textarea
                 value={group.proxies.join('\n')}
                 onChange={(e) => onChange({ 
@@ -1210,7 +1420,7 @@ function EditGroupDialog({
                   proxies: e.target.value.split('\n').filter(p => p.trim()) 
                 })}
                 className="form-input h-32 font-mono text-sm"
-                placeholder="节点选择&#10;自动选择&#10;DIRECT"
+                placeholder="节点选择&#10;自动选择&#10;直连"
               />
             </div>
           )}

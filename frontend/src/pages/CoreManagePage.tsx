@@ -4,6 +4,7 @@ import { Download, Check, RefreshCw, Cpu, ArrowRight, Loader2 } from 'lucide-rea
 import { coreApi, CoreStatus } from '@/api/core'
 import { cn } from '@/lib/utils'
 import { useThemeStore } from '@/stores/themeStore'
+import { useCoreStore, CoreType } from '@/stores/coreStore'
 
 export default function CoreManagePage() {
   const { t } = useTranslation()
@@ -42,11 +43,22 @@ export default function CoreManagePage() {
     }
   }
 
+  const { activeCore, setActiveCore } = useCoreStore()
+
+  // 获取状态后同步 coreStore
+  useEffect(() => {
+    if (status?.currentCore && status.currentCore !== activeCore) {
+      setActiveCore(status.currentCore)
+    }
+  }, [status?.currentCore, activeCore, setActiveCore])
+
   const handleSwitch = async (coreType: string) => {
     if (switching) return
     try {
       setSwitching(true)
       await coreApi.switchCore(coreType)
+      // 同步更新 coreStore
+      setActiveCore(coreType as CoreType)
       await fetchStatus()
     } catch {
       // Ignore errors
@@ -246,7 +258,7 @@ export default function CoreManagePage() {
                       />
                     </div>
                     <div className="text-xs text-center mt-1 text-slate-400">
-                      {downloadProgress}%
+                      {Math.round(downloadProgress)}%
                     </div>
                   </div>
                 )}

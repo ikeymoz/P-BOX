@@ -85,6 +85,9 @@ type Service struct {
 	// 日志收集
 	logs  []string
 	logMu sync.RWMutex
+
+	// 启动回调（用于通知其他模块 VPN 已启动）
+	onStartCallback func()
 }
 
 func NewService(dataDir string) *Service {
@@ -264,7 +267,11 @@ func (s *Service) Start() error {
 	configPath, err := s.regenerateConfig()
 	if err != nil {
 		// 如果重新生成失败，尝试使用已有配置
-		configPath = filepath.Join(s.dataDir, "configs", "config.yaml")
+		if s.coreType == "singbox" {
+			configPath = filepath.Join(s.dataDir, "configs", "singbox-config.json")
+		} else {
+			configPath = filepath.Join(s.dataDir, "configs", "config.yaml")
+		}
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
 			return fmt.Errorf("配置文件未找到，请先生成配置")
 		}
@@ -288,8 +295,16 @@ func (s *Service) Start() error {
 		s.prepareSystemForTUN()
 	}
 
-	// 构建命令 - HomeDir 使用 dataDir，确保 ruleset 在允许路径内
-	s.process = exec.Command(corePath, "-d", s.dataDir, "-f", configPath)
+	// 构建命令 - 根据核心类型使用不同参数
+	// Mihomo: -d <workdir> -f <config>
+	// Sing-Box: run -D <workdir> -c <config>
+	if s.coreType == "singbox" {
+		s.process = exec.Command(corePath, "run", "-D", s.dataDir, "-c", configPath)
+		// 启用已弃用的特殊出站（direct），代理组需要引用"直连"
+		s.process.Env = append(os.Environ(), "ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS=true")
+	} else {
+		s.process = exec.Command(corePath, "-d", s.dataDir, "-f", configPath)
+	}
 	s.process.Dir = s.dataDir
 
 	// 创建管道捕获输出
@@ -328,6 +343,11 @@ func (s *Service) Start() error {
 
 		// 配置所有浏览器使用系统代理（备份用户原有设置）
 		go s.configureAllBrowsers()
+	}
+
+	// 调用启动回调（通知其他模块 VPN 已启动）
+	if s.onStartCallback != nil {
+		s.onStartCallback()
 	}
 
 	return nil
@@ -454,6 +474,13 @@ func (s *Service) SetSettingsProvider(provider SettingsProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settingsProvider = provider
+}
+
+// SetOnStartCallback 设置启动回调（VPN 启动后调用）
+func (s *Service) SetOnStartCallback(callback func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onStartCallback = callback
 }
 
 // RegenerateConfig 从节点管理模块获取过滤后的节点并生成配置（公开方法）
@@ -716,12 +743,37 @@ func (s *Service) GenerateConfig(nodes []ProxyNode) (string, error) {
 	var configPath string
 
 	if s.coreType == "singbox" {
-		// 生成 sing-box 配置
-		config, err := s.singboxGenerator.GenerateConfig(nodes, options)
+		// 生成 sing-box 1.12+ 配置
+		sbOpts := SingBoxGeneratorOptions{
+			Mode:                     "system",
+			FakeIP:                   options.EnhancedMode == "fake-ip",
+			MixedPort:                options.MixedPort,
+			LogLevel:                 options.LogLevel,
+			Sniff:                    true,
+			SniffOverrideDestination: true,
+		}
+		// TUN 模式设置
+		if options.EnableTUN {
+			sbOpts.Mode = "tun"
+			if options.TUNSettings != nil {
+				sbOpts.TUNStack = options.TUNSettings.Stack
+				sbOpts.TUNMTU = options.TUNSettings.MTU
+				sbOpts.StrictRoute = options.TUNSettings.StrictRoute
+				sbOpts.AutoRedirect = options.TUNSettings.AutoRedirect
+			}
+		}
+		// Clash API
+		if options.ExternalController != "" {
+			sbOpts.ClashAPIAddr = options.ExternalController
+		} else {
+			sbOpts.ClashAPIAddr = "127.0.0.1:9090"
+		}
+
+		config, err := s.singboxGenerator.GenerateConfigV112(nodes, sbOpts)
 		if err != nil {
 			return "", err
 		}
-		path, err := s.singboxGenerator.SaveConfig(config, "config.json")
+		path, err := s.singboxGenerator.SaveConfigV112(config, "singbox-config.json")
 		if err != nil {
 			return "", err
 		}
@@ -773,8 +825,40 @@ func (s *Service) loadConfigTemplate() {
 	var template ConfigTemplate
 	if err := json.Unmarshal(data, &template); err == nil {
 		s.configTemplate = &template
+		// 自动修复旧的英文名称
+		s.fixLegacyProxyNames()
 		// 自动合并新的默认代理组
 		s.mergeDefaultProxyGroups()
+	}
+}
+
+// fixLegacyProxyNames 修复旧的英文代理名称为中文
+func (s *Service) fixLegacyProxyNames() {
+	if s.configTemplate == nil {
+		return
+	}
+
+	// 旧名称到新名称的映射
+	nameMap := map[string]string{
+		"auto":   "自动选择",
+		"direct": "DIRECT",
+		"proxy":  "节点选择",
+	}
+
+	changed := false
+	for i := range s.configTemplate.ProxyGroups {
+		group := &s.configTemplate.ProxyGroups[i]
+		for j, proxy := range group.Proxies {
+			if newName, ok := nameMap[proxy]; ok {
+				group.Proxies[j] = newName
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		fmt.Println("✓ 自动修复旧的代理组名称引用")
+		s.saveConfigTemplate()
 	}
 }
 
@@ -1033,4 +1117,52 @@ func (s *Service) restoreSystemAfterTUN() {
 	// 重新启动 systemd-resolved
 	exec.Command("systemctl", "start", "systemd-resolved").Run()
 	s.addLog("已重新启动 systemd-resolved")
+}
+
+// ============================================================================
+// Sing-Box 相关方法
+// ============================================================================
+
+// GetAllNodes 获取所有节点
+func (s *Service) GetAllNodes() ([]ProxyNode, error) {
+	s.mu.RLock()
+	provider := s.nodeProvider
+	s.mu.RUnlock()
+
+	if provider == nil {
+		return nil, fmt.Errorf("节点提供者未设置")
+	}
+
+	nodes := provider()
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("没有可用节点")
+	}
+
+	return nodes, nil
+}
+
+// GetSingBoxConfigContent 读取 Sing-Box 配置文件内容
+func (s *Service) GetSingBoxConfigContent() (string, error) {
+	configPath := filepath.Join(s.dataDir, "configs", "singbox-config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("Sing-Box 配置文件不存在: %w", err)
+	}
+	return string(data), nil
+}
+
+// GetSingBoxTemplate 获取 Sing-Box 模板配置
+func (s *Service) GetSingBoxTemplate() *SingBoxTemplate {
+	return LoadSingBoxTemplate(s.dataDir)
+}
+
+// UpdateSingBoxTemplate 更新 Sing-Box 模板配置
+func (s *Service) UpdateSingBoxTemplate(template *SingBoxTemplate) error {
+	return SaveSingBoxTemplate(s.dataDir, template)
+}
+
+// ResetSingBoxTemplate 重置 Sing-Box 模板为默认值
+func (s *Service) ResetSingBoxTemplate() {
+	template := GetDefaultSingBoxTemplate()
+	SaveSingBoxTemplate(s.dataDir, template)
 }

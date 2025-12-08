@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +50,16 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/template/rules", h.UpdateRules)
 	r.PUT("/template/providers", h.UpdateRuleProviders)
 	r.POST("/template/reset", h.ResetTemplate)
+
+	// Sing-Box 配置生成
+	r.POST("/singbox/generate", h.GenerateSingBoxConfig)
+	r.GET("/singbox/preview", h.GetSingBoxConfigPreview)
+	r.GET("/singbox/download", h.DownloadSingBoxConfig)
+
+	// Sing-Box 模板管理
+	r.GET("/singbox/template", h.GetSingBoxTemplate)
+	r.PUT("/singbox/template", h.UpdateSingBoxTemplate)
+	r.POST("/singbox/template/reset", h.ResetSingBoxTemplate)
 
 	// Mihomo API 代理 (避免 CORS 问题)
 	r.GET("/mihomo/proxies", h.ProxyMihomoGetProxies)
@@ -524,4 +537,210 @@ func (h *Handler) ProxyMihomoTestDelay(c *gin.Context) {
 
 	body, _ := io.ReadAll(resp.Body)
 	c.Data(resp.StatusCode, "application/json", body)
+}
+
+// ========== Sing-Box 1.12+ 配置生成 ==========
+
+// GenerateSingBoxConfig 生成 Sing-Box 1.12+ 配置
+func (h *Handler) GenerateSingBoxConfig(c *gin.Context) {
+	var req struct {
+		Mode           string `json:"mode"`           // tun, system
+		FakeIP         bool   `json:"fakeip"`         // 启用 FakeIP
+		MixedPort      int    `json:"mixedPort"`      // 混合代理端口
+		HTTPPort       int    `json:"httpPort"`       // HTTP 代理端口
+		SocksPort      int    `json:"socksPort"`      // SOCKS5 代理端口
+		ClashAPIAddr   string `json:"clashApiAddr"`   // Clash API 地址
+		ClashAPISecret string `json:"clashApiSecret"` // Clash API 密钥
+		TUNStack       string `json:"tunStack"`       // TUN 栈类型
+		TUNMTU         int    `json:"tunMtu"`         // TUN MTU
+		DNSStrategy    string `json:"dnsStrategy"`    // DNS 策略
+		LogLevel       string `json:"logLevel"`       // 日志级别
+		// 性能优化
+		AutoRedirect             bool `json:"autoRedirect"`             // Linux nftables
+		StrictRoute              bool `json:"strictRoute"`              // 严格路由
+		TCPFastOpen              bool `json:"tcpFastOpen"`              // TCP Fast Open
+		TCPMultiPath             bool `json:"tcpMultiPath"`             // TCP Multi Path
+		UDPFragment              bool `json:"udpFragment"`              // UDP 分片
+		Sniff                    bool `json:"sniff"`                    // 流量嗅探
+		SniffOverrideDestination bool `json:"sniffOverrideDestination"` // 覆盖目标地址
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// 使用默认值
+		req.Mode = "tun"
+		req.MixedPort = 7890
+	}
+
+	// 构建选项
+	opts := SingBoxGeneratorOptions{
+		Mode:                     req.Mode,
+		FakeIP:                   req.FakeIP,
+		MixedPort:                req.MixedPort,
+		HTTPPort:                 req.HTTPPort,
+		SocksPort:                req.SocksPort,
+		ClashAPIAddr:             req.ClashAPIAddr,
+		ClashAPISecret:           req.ClashAPISecret,
+		TUNStack:                 req.TUNStack,
+		TUNMTU:                   req.TUNMTU,
+		DNSStrategy:              req.DNSStrategy,
+		LogLevel:                 req.LogLevel,
+		AutoRedirect:             req.AutoRedirect,
+		StrictRoute:              req.StrictRoute,
+		TCPFastOpen:              req.TCPFastOpen,
+		TCPMultiPath:             req.TCPMultiPath,
+		UDPFragment:              req.UDPFragment,
+		Sniff:                    req.Sniff,
+		SniffOverrideDestination: req.SniffOverrideDestination,
+	}
+
+	// 获取所有节点
+	nodes, err := h.service.GetAllNodes()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "获取节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 生成配置
+	generator := NewSingboxGenerator(h.service.dataDir)
+	config, err := generator.GenerateConfigV112(nodes, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "生成配置失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 保存配置
+	filePath, err := generator.SaveConfigV112(config, "singbox-config")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "保存配置失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 使用 sing-box check 验证配置
+	singboxPath := filepath.Join(h.service.dataDir, "cores", "sing-box")
+	if _, err := os.Stat(singboxPath); err == nil {
+		// sing-box 存在，进行配置验证
+		checkCmd := exec.Command(singboxPath, "check", "-c", filePath)
+		output, checkErr := checkCmd.CombinedOutput()
+		if checkErr != nil {
+			// 验证失败，返回错误信息
+			errorMsg := string(output)
+			if errorMsg == "" {
+				errorMsg = checkErr.Error()
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"code":    2, // 使用 code 2 表示配置验证失败
+				"message": "配置验证失败",
+				"data": gin.H{
+					"configPath":      filePath,
+					"nodeCount":       len(nodes),
+					"mode":            opts.Mode,
+					"validationError": errorMsg,
+				},
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"configPath": filePath,
+			"nodeCount":  len(nodes),
+			"mode":       opts.Mode,
+		},
+	})
+}
+
+// GetSingBoxConfigPreview 获取 Sing-Box 配置预览
+func (h *Handler) GetSingBoxConfigPreview(c *gin.Context) {
+	content, err := h.service.GetSingBoxConfigContent()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"message": "success",
+			"data": gin.H{
+				"content": "// Sing-Box 配置文件未生成，请先点击「生成配置」按钮",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"content": content,
+		},
+	})
+}
+
+// DownloadSingBoxConfig 下载 Sing-Box 配置文件
+func (h *Handler) DownloadSingBoxConfig(c *gin.Context) {
+	content, err := h.service.GetSingBoxConfigContent()
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    1,
+			"message": "配置文件不存在",
+		})
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=singbox-config.json")
+	c.Header("Content-Type", "application/json")
+	c.String(http.StatusOK, content)
+}
+
+// GetSingBoxTemplate 获取 Sing-Box 模板配置
+func (h *Handler) GetSingBoxTemplate(c *gin.Context) {
+	template := h.service.GetSingBoxTemplate()
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    template,
+	})
+}
+
+// UpdateSingBoxTemplate 更新 Sing-Box 模板配置
+func (h *Handler) UpdateSingBoxTemplate(c *gin.Context) {
+	var template SingBoxTemplate
+	if err := c.ShouldBindJSON(&template); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if err := h.service.UpdateSingBoxTemplate(&template); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "保存失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+	})
+}
+
+// ResetSingBoxTemplate 重置 Sing-Box 模板为默认值
+func (h *Handler) ResetSingBoxTemplate(c *gin.Context) {
+	h.service.ResetSingBoxTemplate()
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    h.service.GetSingBoxTemplate(),
+	})
 }

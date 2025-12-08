@@ -10,7 +10,7 @@
       "download": 21910600395,
       "total": 214748364800
     },
-    "updatedAt": "2025-12-07T15:02:07.686772+08:00",
+    "updatedAt": "2025-12-08T15:20:34.993092+08:00",
     "createdAt": "2025-12-05T17:08:32.557339+08:00",
     "autoUpdate": true,
     "updateInterval": 86400,
@@ -35,6 +35,8 @@
     "filterMode": "exclude",
     "customHeaders": {
       "User-Agent": "v2rayN"
-    }
+    },
+    "lastUpdateStatus": "failed",
+    "lastError": "HTTP 错误: 403"
   }
 ]
